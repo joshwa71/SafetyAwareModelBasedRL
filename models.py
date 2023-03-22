@@ -117,6 +117,17 @@ class WorldModel(nn.Module):
                 config.norm,
                 dist="binary",
             )
+        if config.cost_head == "twohot_symlog":
+            self.heads["cost"] = networks.DenseHead(
+                feat_size,  # pytorch version
+                (255,),
+                config.cost_layers,
+                config.units,
+                config.act,
+                config.norm,
+                dist=config.cost_head,
+            )
+
         for name in config.grad_heads:
             assert name in self.heads, name
         self._model_opt = tools.Optimizer(
@@ -129,7 +140,7 @@ class WorldModel(nn.Module):
             opt=config.opt,
             use_amp=self._use_amp,
         )
-        self._scales = dict(reward=config.reward_scale, discount=config.discount_scale)
+        self._scales = dict(reward=config.reward_scale, discount=config.discount_scale, cost=config.cost_scale)
 
     def _train(self, data):
         # action (batch_size, batch_length, act_dim)
@@ -156,7 +167,7 @@ class WorldModel(nn.Module):
                     feat = feat if grad_head else feat.detach()
                     pred = head(feat)
                     like = pred.log_prob(data[name])
-                    likes[name] = like
+                    likes[name] = like                  
                     losses[name] = -torch.mean(like) * self._scales.get(name, 1.0)
                 model_loss = sum(losses.values()) + kl_loss
             metrics = self._model_opt(model_loss, self.parameters())
@@ -189,6 +200,7 @@ class WorldModel(nn.Module):
         obs["image"] = torch.Tensor(obs["image"]) / 255.0 - 0.5
         # (batch_size, batch_length) -> (batch_size, batch_length, 1)
         obs["reward"] = torch.Tensor(obs["reward"]).unsqueeze(-1)
+        obs["cost"] = torch.Tensor(obs["cost"]).unsqueeze(-1)
         if "discount" in obs:
             obs["discount"] *= self._config.discount
             # (batch_size, batch_length) -> (batch_size, batch_length, 1)

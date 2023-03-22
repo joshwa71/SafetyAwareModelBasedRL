@@ -65,7 +65,7 @@ class Dreamer(nn.Module):
             plan2explore=lambda: expl.Plan2Explore(config, self._wm, reward),
         )[config.expl_behavior]()
 
-    def __call__(self, obs, reset, state=None, reward=None, training=True):
+    def __call__(self, obs, reset, state=None, reward=None, cost=None, training=True):
         step = self._step
         if self._should_reset(step):
             state = None
@@ -322,7 +322,7 @@ def main(config):
                 1,
             )
 
-        def random_agent(o, d, s, r):
+        def random_agent(o, d, s, r, c):
             action = random_actor.sample()
             logprob = random_actor.log_prob(action)
             return {"action": action, "logprob": logprob}, None
@@ -343,11 +343,11 @@ def main(config):
     state = None
     while agent._step < config.steps:
         logger.write()
-        print("Start evaluation.")
-        video_pred = agent._wm.video_pred(next(eval_dataset))
-        logger.video("eval_openl", to_np(video_pred))
-        eval_policy = functools.partial(agent, training=False)
-        tools.simulate(eval_policy, eval_envs, episodes=config.eval_episode_num)
+        # print("Start evaluation.")
+        # video_pred = agent._wm.video_pred(next(eval_dataset))
+        # logger.video("eval_openl", to_np(video_pred))
+        # eval_policy = functools.partial(agent, training=False)
+        # tools.simulate(eval_policy, eval_envs, episodes=config.eval_episode_num)
         print("Start training.")
         state = tools.simulate(agent, train_envs, config.eval_every, state=state)
         torch.save(agent.state_dict(), logdir / "latest_model.pt")

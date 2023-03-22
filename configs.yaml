@@ -9,7 +9,7 @@ defaults:
   steps: 5e5
   eval_every: 1e4
   eval_episode_num: 10
-  log_every: 1e4
+  log_every: 5e3
   reset_every: 0
   device: 'cuda:0'
   precision: 16
@@ -41,9 +41,10 @@ defaults:
   dyn_std_act: 'sigmoid2'
   dyn_min_std: 0.1
   dyn_temp_post: True
-  grad_heads: ['image', 'reward', 'discount']
+  grad_heads: ['image', 'reward','cost', 'discount']
   units: 1024
   reward_layers: 5
+  cost_layers: 5
   discount_layers: 5
   value_layers: 5
   actor_layers: 5
@@ -54,6 +55,7 @@ defaults:
   decoder_kernels: [4, 4, 4, 4]
   value_head: 'twohot_symlog'
   reward_head: 'twohot_symlog'
+  cost_head: 'twohot_symlog'
   kl_lscale: '0.1'
   kl_rscale: '0.5'
   kl_free: '1.0'
@@ -61,6 +63,7 @@ defaults:
   pred_discount: True
   discount_scale: 1.0
   reward_scale: 1.0
+  cost_scale: 1.0
   weight_decay: 0.0
   unimix_ratio: 0.01
 

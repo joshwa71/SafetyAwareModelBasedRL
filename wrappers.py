@@ -160,17 +160,21 @@ class RewardObs:
     def observation_space(self):
         spaces = self._env.observation_space.spaces
         assert "reward" not in spaces
+        assert "cost" not in spaces
         spaces["reward"] = gym.spaces.Box(-np.inf, np.inf, dtype=np.float32)
+        spaces["cost"] = gym.spaces.Box(-np.inf, np.inf, dtype=np.float32)
         return gym.spaces.Dict(spaces)
 
     def step(self, action):
         obs, reward, done, info = self._env.step(action)
         obs["reward"] = reward
+        obs["cost"] = info["cost"]
         return obs, reward, done, info
 
     def reset(self):
         obs = self._env.reset()
         obs["reward"] = 0.0
+        obs["cost"] = 0.0
         return obs
 
 

@@ -132,7 +132,7 @@ def simulate(agent, envs, steps=0, episodes=0, state=None):
     cost = [0]*len(envs)
   else:
     step, episode, done, length, obs, agent_state, reward, cost = state
-  #print(obs)
+
   while (steps and step < steps) or (episodes and episode < episodes):
     # Reset envs if necessary.
     if done.any():
@@ -143,10 +143,8 @@ def simulate(agent, envs, steps=0, episodes=0, state=None):
       reward = [reward[i]*(1-done[i]) for i in range(len(envs))]
       cost = [cost[i]*(1-done[i]) for i in range(len(envs))]
     # Step agents.
-    print(obs)
     obs = {k: np.stack([o[k] for o in obs]) for k in obs[0]}
-    #print(obs)
-    action, agent_state = agent(obs, done, agent_state, reward)
+    action, agent_state = agent(obs, done, agent_state, reward, cost)
     if isinstance(action, dict):
       action = [
           {k: np.array(action[k][i].detach().cpu()) for k in action}
@@ -156,9 +154,11 @@ def simulate(agent, envs, steps=0, episodes=0, state=None):
     assert len(action) == len(envs)
     # Step envs.
     results = [e.step(a) for e, a in zip(envs, action)]
-    obs, reward, done = zip(*[p[:3] for p in results])
+    obs, reward, done, info = zip(*[p[:4] for p in results])
+    cost = (info[0]['cost'],)
     obs = list(obs)
     reward = list(reward)
+    cost = list(cost)
     done = np.stack(done)
     episode += int(done.sum())
     length += 1
