@@ -276,6 +276,17 @@ class ImagBehavior(nn.Module):
                 config.value_head,
                 outscale=0.0,
             )
+        if config.cost_head == "twohot_symlog":
+            self.cost = networks.DenseHead(
+                feat_size,  # pytorch version
+                (255,),
+                config.value_layers,
+                config.units,
+                config.act,
+                config.norm,
+                config.cost_head,
+                outscale=0.0,
+            )
         if config.slow_value_target:
             self._slow_value = copy.deepcopy(self.value)
             self._updates = 0
@@ -296,6 +307,14 @@ class ImagBehavior(nn.Module):
             config.value_grad_clip,
             **kw,
         )
+        self._cost_opt = tools.Optimizer(
+            "cost",
+            self.cost.parameters(),
+            config.cost_lr,
+            config.ac_opt_eps,
+            config.cost_grad_clip,
+            **kw,
+        )
         if self._config.reward_EMA:
             self.reward_ema = RewardEMA(device=self._config.device)
 
@@ -305,6 +324,7 @@ class ImagBehavior(nn.Module):
         objective=None,
         action=None,
         reward=None,
+        cost_objective=None,
         imagine=None,
         tape=None,
         repeats=None,
@@ -319,18 +339,22 @@ class ImagBehavior(nn.Module):
                     start, self.actor, self._config.imag_horizon, repeats
                 )
                 reward = objective(imag_feat, imag_state, imag_action)
+                cost = cost_objective(imag_feat, imag_state, imag_action)
                 actor_ent = self.actor(imag_feat).entropy()
                 state_ent = self._world_model.dynamics.get_dist(imag_state).entropy()
                 # this target is not scaled
                 # slow is flag to indicate whether slow_target is used for lambda-return
-                target, weights, base = self._compute_target(
-                    imag_feat, imag_state, imag_action, reward, actor_ent, state_ent
+                reward_target, weights, base = self._compute_reward_target(
+                    imag_feat, imag_state, imag_action, reward, cost, actor_ent, state_ent
                 )
+                cost_target = self._compute_cost_target(
+                    imag_feat, imag_state, imag_action, reward, cost, actor_ent, state_ent
+                )[0]
                 actor_loss, mets = self._compute_actor_loss(
                     imag_feat,
                     imag_state,
                     imag_action,
-                    target,
+                    reward_target,
                     actor_ent,
                     state_ent,
                     weights,
@@ -338,13 +362,14 @@ class ImagBehavior(nn.Module):
                 )
                 metrics.update(mets)
                 value_input = imag_feat
+                cost_input = imag_feat
 
         with tools.RequiresGrad(self.value):
             with torch.cuda.amp.autocast(self._use_amp):
                 value = self.value(value_input[:-1].detach())
-                target = torch.stack(target, dim=1)
+                reward_target = torch.stack(reward_target, dim=1)
                 # (time, batch, 1), (time, batch, 1) -> (time, batch)
-                value_loss = -value.log_prob(target.detach())
+                value_loss = -value.log_prob(reward_target.detach())
                 slow_target = self._slow_value(value_input[:-1].detach())
                 if self._config.slow_value_target:
                     value_loss = value_loss - value.log_prob(
@@ -355,14 +380,36 @@ class ImagBehavior(nn.Module):
                 # (time, batch, 1), (time, batch, 1) -> (1,)
                 value_loss = torch.mean(weights[:-1] * value_loss[:, :, None])
 
+        with tools.RequiresGrad(self.cost):
+            with torch.cuda.amp.autocast(self._use_amp):
+                cost_value = self.cost(cost_input[:-1].detach())
+                cost_target = torch.stack(cost_target, dim=1)
+                # (time, batch, 1), (time, batch, 1) -> (time, batch)
+                cost_loss = -cost_value.log_prob(cost_target.detach())
+                slow_target = self._slow_value(cost_input[:-1].detach())
+                if self._config.slow_value_target:
+                    cost_loss = cost_loss - cost_value.log_prob(
+                        slow_target.mode().detach()
+                    )
+                if self._config.value_decay:
+                    cost_loss += self._config.value_decay * cost_value.mode()
+                # (time, batch, 1), (time, batch, 1) -> (1,)
+                cost_loss = torch.mean(weights[:-1] * cost_loss[:, :, None])
+
+        # print('value_loss', value_loss)
+        # print('cost_loss', cost_loss)       
         metrics.update(tools.tensorstats(value.mode(), "value"))
-        metrics.update(tools.tensorstats(target, "target"))
+        metrics.update(tools.tensorstats(cost_value.mode(), "cost"))
+        metrics.update(tools.tensorstats(reward_target, "target"))
+        metrics.update(tools.tensorstats(cost_target, "cost_target"))
         metrics.update(tools.tensorstats(reward, "imag_reward"))
+        metrics.update(tools.tensorstats(cost, "imag_cost"))
         metrics.update(tools.tensorstats(imag_action, "imag_action"))
         metrics["actor_ent"] = to_np(torch.mean(actor_ent))
         with tools.RequiresGrad(self):
             metrics.update(self._actor_opt(actor_loss, self.actor.parameters()))
             metrics.update(self._value_opt(value_loss, self.value.parameters()))
+            metrics.update(self._cost_opt(cost_loss, self.cost.parameters()))
         return imag_feat, imag_state, imag_action, weights, metrics
 
     def _imagine(self, start, policy, horizon, repeats=None):
@@ -398,8 +445,37 @@ class ImagBehavior(nn.Module):
 
         return feats, states, actions
 
-    def _compute_target(
-        self, imag_feat, imag_state, imag_action, reward, actor_ent, state_ent
+    def _compute_cost_target(
+        self, imag_feat, imag_state, imag_action, reward, cost, actor_ent, state_ent
+    ):
+        if "discount" in self._world_model.heads:
+            inp = self._world_model.dynamics.get_feat(imag_state)
+            discount = self._world_model.heads["discount"](inp).mean
+        else:
+            discount = self._config.discount * torch.ones_like(cost)
+        if self._config.future_entropy and self._config.actor_entropy() > 0:
+            cost += self._config.actor_entropy() * actor_ent
+        if self._config.future_entropy and self._config.actor_state_entropy() > 0:
+            cost += self._config.actor_state_entropy() * state_ent
+        value = self.cost(imag_feat).mode()
+        # value(15, 960, ch)
+        # action(15, 960, ch)
+        # discount(15, 960, ch)
+        target = tools.lambda_return(
+            cost[:-1],
+            value[:-1],
+            discount[:-1],
+            bootstrap=value[-1],
+            lambda_=self._config.discount_lambda,
+            axis=0,
+        )
+        weights = torch.cumprod(
+            torch.cat([torch.ones_like(discount[:1]), discount[:-1]], 0), 0
+        ).detach()
+        return target, weights, value[:-1]
+
+    def _compute_reward_target(
+        self, imag_feat, imag_state, imag_action, reward, cost, actor_ent, state_ent
     ):
         if "discount" in self._world_model.heads:
             inp = self._world_model.dynamics.get_feat(imag_state)
@@ -467,6 +543,7 @@ class ImagBehavior(nn.Module):
                 * (target - self.value(imag_feat[:-1]).mode()).detach()
             )
             mix = self._config.imag_gradient_mix()
+            #print(mix)
             actor_target = mix * target + (1 - mix) * actor_target
             metrics["imag_gradient_mix"] = mix
         else:

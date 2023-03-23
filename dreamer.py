@@ -159,7 +159,10 @@ class Dreamer(nn.Module):
         reward = lambda f, s, a: self._wm.heads["reward"](
             self._wm.dynamics.get_feat(s)
         ).mode()
-        metrics.update(self._task_behavior._train(start, reward)[-1])
+        cost = lambda f, s, a: self._wm.heads["cost"](
+            self._wm.dynamics.get_feat(s)
+        ).mode()
+        metrics.update(self._task_behavior._train(start, reward, cost_objective=cost)[-1])
         if self._config.expl_behavior != "greedy":
             if self._config.pred_discount:
                 data = {k: v[:-1] for k, v in data.items()}
