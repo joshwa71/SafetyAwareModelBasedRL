@@ -18,6 +18,7 @@ from gym.envs.registration import register
 
 STATE_KEY = 'state'
 
+
 class PixelObservationWrapper(ObservationWrapper):
     """Augment observations by pixel values."""
 
@@ -124,42 +125,17 @@ class PixelObservationWrapper(ObservationWrapper):
         self._render_kwargs = render_kwargs
         self._pixel_keys = pixel_keys
         self.buttons = None
+        self.vases = None
+        self.hazards = None
         self.COLOR_BUTTON = np.array([1, .5, 0, 1])
         self.COLOR_GOAL = np.array([0, 1, 0, 1])
+        self.COLOR_VASE = np.array([1, 0, 0, 1])
+        self.COLOR_HAZARD = np.array([0, 0, 1, 1])
 
     def observation(self, observation):
-        pixel_observation = self._add_pixel_observation(observation)
-        return pixel_observation
-        
-
-    def _add_pixel_observation(self, observation):
-        if self._pixels_only:
-            observation = collections.OrderedDict()
-        elif self._observation_is_dict:
-            observation = type(observation)(observation)
-        else:
-            observation = collections.OrderedDict()
-            observation[STATE_KEY] = observation
-        if self.task == "button":
-            if self.buttons is None:
-                self.buttons = [i for i, name in enumerate(self.env.unwrapped.sim.model.geom_names) if name.startswith("button")]
-            for j, button in enumerate(self.buttons):
-                if j == self.env.unwrapped.goal_button:
-                    self.env.unwrapped.sim.model.geom_rgba[button] = self.COLOR_GOAL
-                else:   
-                    self.env.unwrapped.sim.model.geom_rgba[button] = self.COLOR_BUTTON
-        pixel_observations = {
-            pixel_key: self.env.sim.render(**self._render_kwargs[pixel_key])[::-1, :, :]
-            for pixel_key in self._pixel_keys
-        }
-
-        observation.update(pixel_observations)
-
-        #print(observation)
-
-        return observation
-
-gym.logger.set_level(40)
+        pixels = self.render(camera_id=2, mode='rgb_array', width=64, height=64)
+        obs = {'image': pixels}
+        return obs
 
 def make_safety(domain_name, image_size=64, use_pixels=True, action_repeat=1):
     env = gym.make(

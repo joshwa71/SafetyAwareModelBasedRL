@@ -188,8 +188,8 @@ def make_dataset(episodes, config):
 
 
 def make_env(config, logger, mode, train_eps, eval_eps):
-    if config.task == 'Safexp-PointGoal2-v0':
-        env = make_safety('Safexp-PointGoal2-v0')
+    if config.task == 'Safexp-PointGoal1-v0':
+        env = make_safety(config.task)
     elif suite == "atari":
         env = wrappers.Atari(
             task,
@@ -342,6 +342,11 @@ def main(config):
     if (logdir / "latest_model.pt").exists():
         agent.load_state_dict(torch.load(logdir / "latest_model.pt"))
         agent._should_pretrain._once = False
+    if (logdir / "lagrange.txt").exists():
+        with open(logdir / 'lagrange.txt', 'r') as f:
+            lag = float(f.read())  
+        agent._task_behavior.lagrange = lag
+
 
     state = None
     while agent._step < config.steps:
@@ -354,6 +359,9 @@ def main(config):
         print("Start training.")
         state = tools.simulate(agent, train_envs, config.eval_every, state=state)
         torch.save(agent.state_dict(), logdir / "latest_model.pt")
+        lag = agent._task_behavior.lagrange.item()
+        with open(logdir / 'lagrange.txt', 'w') as f:
+            f.write(str(lag))
     for env in train_envs + eval_envs:
         try:
             env.close()
