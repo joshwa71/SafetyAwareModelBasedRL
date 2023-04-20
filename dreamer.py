@@ -25,9 +25,13 @@ from torch import distributions as torchd
 import safety_gym
 import mujoco_py
 import gym
+import wandb
 from make_gym_env import make_safety
 
 to_np = lambda x: x.detach().cpu().numpy()
+wandb.login()
+wandb.init(project="dreamer", entity="joshuaohara71", name="test")
+
 
 
 class Dreamer(nn.Module):
@@ -338,6 +342,7 @@ def main(config):
     train_dataset = make_dataset(train_eps, config)
     eval_dataset = make_dataset(eval_eps, config)
     agent = Dreamer(config, logger, train_dataset).to(config.device)
+    wandb.watch(agent, log="all", log_freq=100)
     agent.requires_grad_(requires_grad=False)
     if (logdir / "latest_model.pt").exists():
         agent.load_state_dict(torch.load(logdir / "latest_model.pt"))

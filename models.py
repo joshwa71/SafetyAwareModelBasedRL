@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from torch.optim import SGD
 from torchviz import make_dot
+import wandb
 import numpy as np
 from PIL import ImageColor, Image, ImageDraw, ImageFont
 
@@ -231,7 +232,7 @@ class WorldModel(nn.Module):
 
 
 class ImagBehavior(nn.Module):
-    def __init__(self, config, world_model, stop_grad_actor=True, reward=None, start_lagrange = 1):
+    def __init__(self, config, world_model, stop_grad_actor=True, reward=None, start_lagrange = 2e-2):
         super(ImagBehavior, self).__init__()
         self._use_amp = True if config.precision == 16 else False
         self._config = config
@@ -476,12 +477,14 @@ class ImagBehavior(nn.Module):
             return None, None
         last_cost = self.last_cost.detach()
         cost_baseline = self.budget_undiscounted/self.steps * torch.flatten(last_cost).size()[0]
-        loss_lag = (torch.nn.functional.softplus(self.raw_lag)/torch.nn.functional.softplus(self.raw_lag).detach() * (cost_baseline-torch.abs(torch.sum(torch.flatten(last_cost)))))
+        loss_lag = (torch.nn.functional.softplus(self.raw_lag)/torch.nn.functional.softplus(self.raw_lag).detach() * (cost_baseline - torch.sum(torch.flatten(last_cost))))
+        wandb.log({"raw_lag": self.raw_lag, "loss_lag": loss_lag, "cost_baseline": cost_baseline, "cost": torch.sum(torch.flatten(last_cost)), "cost_difference": cost_baseline - torch.sum(torch.flatten(last_cost))})
         # torch.abs used to improve stability at the start of training
         self.optim_lagrange.zero_grad()
         loss_lag.backward(retain_graph=False)
         torch.nn.utils.clip_grad_norm_(self.raw_lag, 1000)
         self.optim_lagrange.step()
+        torch.clamp(self.raw_lag, min=-20, max=20)
         with torch.no_grad():
             self.lagrange = torch.nn.functional.softplus(self.raw_lag)
         return self.lagrange, loss_lag
@@ -625,7 +628,10 @@ class ImagBehavior(nn.Module):
             l = self.lagrange.detach().item()
         else:
             l = self.lagrange
+        
         actor_loss = -torch.mean(weights[:-1] * actor_target) + l * torch.mean(weights[:-1] * cost_adv)
+        wandb.log({"cost_adv": torch.mean(weights[:-1] * cost_adv), "reward_adv": -torch.mean(weights[:-1] * reward_adv), "actor_entropy": torch.mean(actor_entropy)})
+        wandb.log({"actor_loss": actor_loss, "lagrange": l})
         metrics["actor_loss"] = to_np(actor_loss)
         return actor_loss, metrics
 
