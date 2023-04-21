@@ -484,7 +484,7 @@ class ImagBehavior(nn.Module):
         loss_lag.backward(retain_graph=False)
         torch.nn.utils.clip_grad_norm_(self.raw_lag, 1000)
         self.optim_lagrange.step()
-        torch.clamp(self.raw_lag, min=-20, max=20)
+        self.raw_lag = torch.clamp(self.raw_lag, min=-10, max=10)
         with torch.no_grad():
             self.lagrange = torch.nn.functional.softplus(self.raw_lag)
         return self.lagrange, loss_lag
