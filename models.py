@@ -2,6 +2,7 @@ import copy
 import torch
 from torch import nn
 from torch.optim import SGD
+from torch.autograd import Function
 from torchviz import make_dot
 import wandb
 import numpy as np
@@ -12,6 +13,31 @@ import tools
 
 to_np = lambda x: x.detach().cpu().numpy()
 
+
+
+class DifferentiableClamp(torch.autograd.Function):
+    """
+    In the forward pass this operation behaves like torch.clamp.
+    But in the backward pass its gradient is 1 everywhere, as if instead of clamp one had used the identity function.
+    """
+
+    @staticmethod
+    def forward(ctx, input, min, max):
+        return input.clamp(min=min, max=max)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.clone(), None, None
+
+
+def dclamp(input, min, max):
+    """
+    Like torch.clamp, but with a constant 1-gradient.
+    :param input: The input that is to be clamped.
+    :param min: The minimum value of the output.
+    :param max: The maximum value of the output.
+    """
+    return DifferentiableClamp.apply(input, min, max)
 
 class RewardEMA(object):
     """running mean and std"""
@@ -239,7 +265,6 @@ class ImagBehavior(nn.Module):
         self._world_model = world_model
         self._stop_grad_actor = stop_grad_actor
         self._reward = reward
-
         budget = 25
         self.last_cost = None
         self.gamma_c = 0.995
@@ -247,6 +272,7 @@ class ImagBehavior(nn.Module):
         self.budget_undiscounted = budget
         self.budget = budget*(1 - self.gamma_c ** (1000)) / (1 - self.gamma_c)/(1000)
         self.raw_lag = torch.tensor([np.log(np.exp(start_lagrange)-1)], requires_grad=True, device=torch.device('cuda'), dtype=torch.float32)
+        #self.raw_lag = torch.tensor(-20.0, requires_grad=True, device=torch.device('cuda'), dtype=torch.float32)
         with torch.no_grad():
             self.lagrange = torch.nn.functional.softplus(self.raw_lag)
 
@@ -361,6 +387,7 @@ class ImagBehavior(nn.Module):
                 # print('imag action dim', imag_action.size())
                 reward = objective(imag_feat, imag_state, imag_action)
                 cost = cost_objective(imag_feat, imag_state, imag_action)
+                
                 _lag, lag_loss = self.update_lag()
                 if _lag is not None:
                     metrics["lagrange"] = to_np(_lag)
@@ -473,20 +500,24 @@ class ImagBehavior(nn.Module):
         return feats, states, actions
 
     def update_lag(self):
-        if self.last_cost is None:
+        if self.last_cost is None or self.raw_lag is None:
             return None, None
         last_cost = self.last_cost.detach()
         cost_baseline = self.budget_undiscounted/self.steps * torch.flatten(last_cost).size()[0]
+        self.optim_lagrange = SGD([self.raw_lag], lr=2e-4)
         loss_lag = (torch.nn.functional.softplus(self.raw_lag)/torch.nn.functional.softplus(self.raw_lag).detach() * (cost_baseline - torch.sum(torch.flatten(last_cost))))
         wandb.log({"raw_lag": self.raw_lag, "loss_lag": loss_lag, "cost_baseline": cost_baseline, "cost": torch.sum(torch.flatten(last_cost)), "cost_difference": cost_baseline - torch.sum(torch.flatten(last_cost))})
         # torch.abs used to improve stability at the start of training
         self.optim_lagrange.zero_grad()
-        loss_lag.backward(retain_graph=False)
-        torch.nn.utils.clip_grad_norm_(self.raw_lag, 1000)
+        loss_lag.backward()
+        torch.nn.utils.clip_grad_norm_(self.raw_lag, 500)
         self.optim_lagrange.step()
-        self.raw_lag = torch.clamp(self.raw_lag, min=-10, max=10)
         with torch.no_grad():
             self.lagrange = torch.nn.functional.softplus(self.raw_lag)
+        clone = self.raw_lag.clone().detach()
+        clamped = torch.clamp(clone, min=-10, max=10)
+        self.raw_lag = torch.tensor(clamped, requires_grad=True).to(self._config.device)
+        self.optim_lagrange = SGD([self.raw_lag], lr=2e-4)
         return self.lagrange, loss_lag
 
 
